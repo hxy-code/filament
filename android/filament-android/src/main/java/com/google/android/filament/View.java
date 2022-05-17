@@ -86,6 +86,17 @@ public class View {
     private GuardBandOptions mGuardBandOptions;
 
     /**
+     * List of available ambient occlusion techniques.
+     * @deprecated use setAmbientOcclusionOptions instead
+     * @see #setAmbientOcclusion
+     */
+    @Deprecated
+    public enum AmbientOcclusion {
+        NONE,
+        SSAO
+    }
+
+    /**
      * List of available tone-mapping operators
      *
      * @deprecated Use ColorGrading instead
