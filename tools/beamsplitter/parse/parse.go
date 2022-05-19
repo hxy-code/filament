@@ -25,8 +25,205 @@ import (
 	"strings"
 )
 
+func parseStructBody(lex *lexer) []Node {
+	var members []Node
+	append := func(node Node) {
+		members = append(members, node)
+	}
+	parseMethod := func(name, returns, args item, isTemplate bool) *MethodNode {
+		item := lex.nextItem()
+		for item.typ == itemConst || item.typ == itemNoexcept {
+			item = lex.nextItem()
+		}
+		method := &MethodNode{
+			NodeType:   NodeMethod,
+			Line:       Line(item.line),
+			Name:       name.val,
+			ReturnType: returns.val,
+			Arguments:  args.val,
+			Body:       "",
+			IsTemplate: isTemplate,
+		}
+		switch item.typ {
+		case itemMethodBody:
+			method.Body = item.val
+		case itemSemicolon:
+		default:
+			panic(lex, item)
+			return nil
+		}
+		return method
+	}
+	for item := lex.nextItem(); item.typ != itemCloseBrace; item = lex.nextItem() {
+		switch {
+		case item.val == "public", item.val == "private", item.val == "protected":
+			expect(lex, itemColon)
+			append(&AccessSpecifierNode{
+				NodeType: NodeAccessSpecifier,
+				Line:     Line(item.line),
+				Access:   item.val,
+			})
+		case item.typ == itemCloseBrace:
+			break
+		case item.typ == itemSimpleType:
+			name := expect(lex, itemIdentifier)
+			nextItem := lex.nextItem()
+			switch nextItem.typ {
+			case itemMethodArgs:
+				parseMethod(name, item, nextItem, false)
+			case itemSemicolon:
+				append(&FieldNode{
+					NodeType:  NodeField,
+					Line:      Line(item.line),
+					Name:      name.val,
+					FieldType: item.val,
+					Rhs:       "",
+				})
+			case itemEquals:
+				rhs := expect(lex, itemDefaultValue)
+				expect(lex, itemSemicolon)
+				append(&FieldNode{
+					NodeType:  NodeField,
+					Line:      Line(item.line),
+					Name:      name.val,
+					FieldType: item.val,
+					Rhs:       rhs.val,
+				})
+			}
+		case item.typ == itemTemplate:
+			expect(lex, itemTemplateArgs)
+			returns := expect(lex, itemSimpleType)
+			name := expect(lex, itemIdentifier)
+			args := expect(lex, itemMethodArgs)
+			append(parseMethod(name, returns, args, true))
+		default:
+			panic(lex, item)
+		}
+	}
+	return members
+}
+
+func parseClass(lex *lexer) *ClassNode {
+	name := expect(lex, itemIdentifier)
+	item := lex.nextItem()
+	if item.typ == itemSemicolon {
+		// We don't have an AST node for forward declarations, just skip it.
+		return nil
+	}
+	if item.typ == itemColon {
+		// Only one base class is allowed.
+		expect(lex, itemIdentifier)
+	}
+	expect(lex, itemOpenBrace)
+	members := parseStructBody(lex)
+	expect(lex, itemCloseBrace)
+	expect(lex, itemSemicolon)
+	return &ClassNode{
+		NodeType: NodeClass,
+		Line:     Line(name.line),
+		Name:     name.val,
+		Members:  members,
+	}
+}
+
+func parseStruct(lex *lexer) *StructNode {
+	name := expect(lex, itemIdentifier)
+	item := lex.nextItem()
+	if item.typ == itemSemicolon {
+		// We don't have an AST node for forward declarations, just skip it.
+		return nil
+	}
+	expect(lex, itemOpenBrace)
+	members := parseStructBody(lex)
+	expect(lex, itemCloseBrace)
+	item = lex.nextItem()
+	instanceName := ""
+	if item.typ == itemIdentifier {
+		instanceName = item.val
+		expect(lex, itemSemicolon)
+	} else if item.typ != itemSemicolon {
+		panic(lex, item)
+	}
+	return &StructNode{
+		NodeType:     NodeStruct,
+		Line:         Line(name.line),
+		Name:         name.val,
+		Members:      members,
+		InstanceName: instanceName,
+	}
+}
+
+func parseEnum(lex *lexer) *EnumNode {
+	item := lex.nextItem()
+	lex.drain()
+	log.Fatalf("%d: enum not yet supported", item.line)
+	return nil
+}
+
+func parseUsing(lex *lexer) *UsingNode {
+	item := lex.nextItem()
+	lex.drain()
+	log.Fatalf("%d: using not yet supported", item.line)
+	return nil
+}
+
+func parseNamespace(lex *lexer) *NamespaceNode {
+	expect(lex, itemNamespace)
+	name := expect(lex, itemIdentifier)
+	expect(lex, itemOpenBrace)
+	ns := &NamespaceNode{NodeNamespace, Line(name.line), name.val, nil}
+	item := lex.nextItem()
+	append := func(child Node) {
+		if child != nil {
+			ns.Children = append(ns.Children, child)
+		}
+	}
+	for ; item.typ != itemCloseBrace; item = lex.nextItem() {
+		switch item.typ {
+		case itemClass:
+			append(parseClass(lex))
+		case itemStruct:
+			append(parseStruct(lex))
+		case itemEnum:
+			append(parseEnum(lex))
+		case itemUsing:
+			append(parseUsing(lex))
+		case itemNamespace:
+			append(parseNamespace(lex))
+		default:
+			panic(lex, item)
+		}
+	}
+	return ns
+}
+
+func parseRoot(lexer *lexer) *RootNode {
+	ns := parseNamespace(lexer)
+	return &RootNode{NodeRoot, 0, ns}
+}
+
+func expect(lex *lexer, expectedType itemType) item {
+	item := lex.nextItem()
+	if item.typ != expectedType {
+		panic(lex, item)
+	}
+	return item
+}
+
+func panic(lex *lexer, unexpected item) {
+	lex.drain()
+	log.Fatalf("%d: parser sees unexpected lexeme %s", unexpected.line, unexpected.String())
+}
+
 // Consumes a C++ header file and produces a type database.
 func Parse(sourcePath string) []TypeDefinition {
+	contents, err := os.ReadFile(sourcePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	lexer := createLexer(string(contents))
+	parseRoot(lexer)
+
 	sourceFile, err := os.Open(sourcePath)
 	if err != nil {
 		log.Fatal(err)
